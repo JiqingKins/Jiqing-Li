@@ -1,0 +1,617 @@
+---
+title: "MTH404 R Project"
+author: "Jiqing Li"
+date: "2023-04-20"
+output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  html_document:
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+<br>
+<br>
+
+## Data
+
+We collected the data from ``kaggle datasets" named as "KC_Housesales_Data”. The link of the data: https://www.kaggle.com/swathiachath/kc-housesales-data
+
+Online property companies offer valuations of houses using machine learning techniques. The aim of this report is to predict the house sales in King County, Washington State, USA using Multiple Linear Regression (MLR). The dataset consisted of historic data of houses sold between May 2014 to May 2015.
+
+```{r}
+library(tidyverse)
+library(corrplot)
+library(lubridate)
+library(readr)
+library(caTools)
+library(GGally)
+library(caret)
+library(leaps)
+library(dplyr)
+library(ggplot2)
+library(gridExtra) 
+```
+
+<br>
+<br>
+
+## Load the data
+
+By reading the provided train data in Excel, I have select some major columns from it as our traindata in R Project.   
+
+```{r}
+traindata <- read.csv("~/train1.csv", header=TRUE)
+testdata <- read.csv("~/test.csv", header=TRUE)
+```
+
+```{r}
+str(traindata)
+head(traindata,10)
+```
+
+<br>
+<br>
+<br>
+
+## Clean and Modify Data
+<br>
+
+### STEP 1: Determine latest built date
+#### Choose the latest year number in YearBuilt column and YearRemodAdd column as a new column, YearBuiltOrRe.
+```{r}
+traindata$YearBuiltOrRe <- pmax(traindata$YearBuilt, traindata$YearRemodAdd)
+
+testdata$YearBuiltOrRe <- pmax(testdata$YearBuilt, testdata$YearRemodAdd)
+```
+
+<br>
+<br>
+
+### STEP 2: Determine total bathrooms
+#### Find out the total Bathrooms, use 0.5 for half bath, 1 for full bath.
+```{r}
+traindata$TotalBath <- traindata$BsmtFullBath + (0.5 * traindata$BsmtHalfBath) +traindata$FullBath + (0.5 * traindata$HalfBath)
+
+testdata$TotalBath <- testdata$BsmtFullBath + (0.5 * testdata$BsmtHalfBath) +testdata$FullBath + (0.5 * testdata$HalfBath)
+```
+
+<br>
+<br>
+
+### STEP 3: Rank neighborhoods with score
+#### Find out the average sale price for house in each neighborhood. And replace neighborhood names with score from 1 to 10, rank by their average sale price.
+```{r}
+unique_items_in_Neighborhood_train <- unique(traindata$Neighborhood)
+unique_items_in_Neighborhood_train # Find out all Neighborhood in traindata
+
+# Find out prices and mean price in each neighborhood provided
+neighborhood_prices <- traindata %>%
+  group_by(Neighborhood) %>%
+  summarise(mean_price = mean(SalePrice), 
+            prices = list(SalePrice))
+
+print.data.frame(neighborhood_prices[, c("Neighborhood", "mean_price")])
+
+# Graph Box plot to visually see how prices data locate in each neighborhood 
+ggplot(traindata, aes(x = Neighborhood, y = SalePrice, fill = Neighborhood)) +
+  geom_boxplot() +
+  ggtitle("Neighborhood House Prices") +
+  ylab("Sale Price ($)") +
+  xlab("Neighborhood") +
+  scale_fill_discrete(name = "Neighborhood") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+
+# Rank each neighborhood by SalePrice with score from 1 to 10
+neighborhood_prices <- traindata %>%
+  group_by(Neighborhood) %>%
+  summarise(mean_price = mean(SalePrice)) %>%
+  mutate(rank = rank(mean_price) / length(mean_price),
+         NBscore = round(rank * 9) + 1)
+
+print.data.frame(neighborhood_prices[, c("Neighborhood", "mean_price", "NBscore")])
+
+# Add Neighborhood Score in traindata
+traindata <- traindata %>%
+  left_join(neighborhood_prices[, c("Neighborhood", "NBscore")], by = "Neighborhood")
+```
+
+
+
+
+```{r}
+unique_items_in_Neighborhood_test <- unique(testdata$Neighborhood)
+unique_items_in_Neighborhood_test # Find out all Neighborhood in testdata
+
+
+lookup_table <- unique(traindata[, c("Neighborhood", "NBscore")])
+
+# Merge the testdata with the lookup table to get the NBscore for each neighborhood in testdata
+testdata <- merge(testdata, lookup_table, by = "Neighborhood", all.x = TRUE)
+```
+
+<br>
+<br>
+
+### STEP 4: Check for the missing values
+```{r}
+NA_values=data.frame(no_of_na_values=colSums(is.na(traindata)))
+head(NA_values,26)
+```
+
+<br>
+<br>
+
+
+### STEP 5: Clean all unnecessary columns
+```{r}
+traindata <- traindata %>%
+  select(-c(Neighborhood, BsmtFullBath, BsmtHalfBath, FullBath, HalfBath, MoSold, YearBuilt, YearRemodAdd))
+
+
+
+# Final look for traindata
+head(traindata, 10)
+```
+
+<br>
+<br>
+<br>
+
+## Divide Data to 2 Subset
+Subset 1 is named in train_data with a ratio of 0.8 traindata, subset 2 is named in teast_data with a ratio of 0.2 traindata.
+
+```{r}
+set.seed(700)   #  set seed to ensure you always have same random numbers generated
+sample = sample.split(traindata,SplitRatio = 0.8) 
+train_data =subset(traindata,sample ==TRUE)
+test_data=subset(traindata, sample==FALSE)
+```
+
+<br>
+<br>
+<br>
+
+## Exploratory Data Analysis
+
+<br>
+
+### STEP 1: Correlation Plot
+#### Determining the association between variables by their correlation.
+```{r}
+cor_data=data.frame(train_data[,2:17])
+correlation=cor(cor_data)
+par(mfrow=c(1, 1))
+corrplot(correlation,method="color")
+corrplot(correlation,method="number", number.cex = 0.5)
+```
+
+<br>
+
+According to our corrplot SalePrice is positively correlated with OverallQual, GrLivArea, GarageCars, YearBuiltOrRe, TotalBath, NBscore, LotArea, BedroomAbvGr, TotalBsmtSF, X1stFlrSF, X2ndFlrSF.
+
+<br>
+<br>
+<br>
+
+### STEP 2: Scatter plots and Boxplots 
+#### Draw to Scatter plots and Boxplots to determine the relationship between these variables.
+
+<br>
+
+From following scatter plots, we conclude that the relationship between OverallQual, GrLivArea, GarageCars, YearBuiltOrRe, TotalBath, NBscore and LotArea is linear
+```{r}
+p1=ggplot(data = train_data, aes(x = OverallQual, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of OverallQual and SalePrice", x="OverallQual",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p2=ggplot(data = train_data, aes(x = GrLivArea, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of GrLivArea and SalePrice", x="GrLivArea",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p3=ggplot(data = train_data, aes(x = GarageCars, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of GarageCars and SalePrice", x="GarageCars",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p4=ggplot(data = train_data, aes(x = YearBuiltOrRe, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of YearBuiltOrRe and SalePrice", x="YearBuiltOrRe",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p5=ggplot(data = train_data, aes(x = TotalBath, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of TotalBath and SalePrice", x="TotalBath",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p6=ggplot(data = train_data, aes(x = NBscore, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of NBscore and SalePrice", x="NBscore",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p7=ggplot(data = train_data, aes(x = LotArea, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of LotArea and SalePrice", x="LotArea",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p8=ggplot(data = train_data, aes(x = BedroomAbvGr, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of BedroomAbvGr and SalePrice", x="BedroomAbvGr",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p9=ggplot(data = train_data, aes(x = TotalBsmtSF, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of TotalBsmtSF and SalePrice", x="TotalBsmtSF",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p10=ggplot(data = train_data, aes(x = X1stFlrSF, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of X1stFlrSF and SalePrice", x="X1stFlrSF",y="SalePrice") + theme(plot.title = element_text(size = 10))
+p11=ggplot(data = train_data, aes(x = X2ndFlrSF, y = SalePrice)) +
+  geom_jitter() +  geom_smooth(method = "lm", se = FALSE)+labs(title="Scatter plot of X2ndFlrSF and SalePrice", x="X2ndFlrSF",y="SalePrice") + theme(plot.title = element_text(size = 10))
+```
+
+<br>
+
+##### **Scatter Plots**
+```{r}
+grid.arrange(p1,p2,p3,p4,p5,p6,nrow=3)
+grid.arrange(p7,p8,p9,p10,p11,nrow=3)
+```
+
+<br>
+
+##### **Box Plots**
+For the 4 categorical variables(OverallQual, GarageCars, TotalBath, and NBscore) we draw boxplots to understand the relationship.
+
+```{r}
+par(mfrow=c(1, 2))
+boxplot(SalePrice~OverallQual,data=train_data,main="Different boxplots", xlab="OverallQual",ylab="SalePrice",col="orange",border="brown")
+boxplot(SalePrice~GarageCars,data=train_data,main="Different boxplots", xlab="GarageCars",ylab="SalePrice",col="orange",border="brown")
+boxplot(SalePrice~TotalBath,data=train_data,main="Different boxplots", xlab="TotalBath",ylab="SalePrice",col="orange",border="brown")
+boxplot(SalePrice~NBscore,data=train_data,main="Different boxplots", xlab="NBscore",ylab="SalePrice",col="orange",border="brown")
+```
+
+There is a relationship between price and categorical variables, OverallQual, GarageCars, TotalBath, and NBscore.
+
+<br>
+<br>
+<br>
+
+### STEP 3: Performing ggpair plot.
+```{r}
+ggpairs(train_data, 
+        columns= c("OverallQual","GrLivArea","GarageCars","YearBuiltOrRe","TotalBath","NBscore","LotArea","BedroomAbvGr","TotalBsmtSF","X1stFlrSF", "X2ndFlrSF"),
+        diag = list(continuous = wrap("barDiag", cex = 0.5)),
+        upper = list(continuous = wrap("cor", size = 3))) +
+  theme_grey(base_size = 8)
+```
+
+<br>
+<br>
+<br>
+<br>
+
+### STEP 4: Determine outliers with boxplots
+#### Check and analysis for outliers in the dependent variable(price) using a boxplot.
+
+<br>
+<br>
+
+##### **a. Identify Outliers by drawing boxplot**
+```{r}
+b1 <- ggplot(data=train_data)+geom_boxplot(aes(x=OverallQual,y=SalePrice))
+b2 <- ggplot(data=train_data)+geom_boxplot(aes(x=GrLivArea,y=SalePrice))
+b3 <- ggplot(data=train_data)+geom_boxplot(aes(x=GarageCars,y=SalePrice))
+b4 <- ggplot(data=train_data)+geom_boxplot(aes(x=YearBuiltOrRe,y=SalePrice))
+b5 <- ggplot(data=train_data)+geom_boxplot(aes(x=TotalBath,y=SalePrice))
+b6 <- ggplot(data=train_data)+geom_boxplot(aes(x=NBscore,y=SalePrice))
+b7 <- ggplot(data=train_data)+geom_boxplot(aes(x=LotArea,y=SalePrice))
+b8 <- ggplot(data=train_data)+geom_boxplot(aes(x=BedroomAbvGr,y=SalePrice))
+b9 <- ggplot(data=train_data)+geom_boxplot(aes(x=TotalBsmtSF,y=SalePrice))
+b10 <- ggplot(data=train_data)+geom_boxplot(aes(x=X1stFlrSF,y=SalePrice))
+b11 <- ggplot(data=train_data)+geom_boxplot(aes(x=X2ndFlrSF,y=SalePrice))
+
+grid.arrange(b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11, nrow=3)
+```
+
+<br>
+<br>
+
+##### **b. Create new data set without all outliers named in train_data1**
+
+```{r}
+outliers=boxplot(train_data$SalePrice,plot=FALSE)$out
+outliers_data=train_data[which(train_data$SalePrice %in% outliers),]
+train_data1= train_data[-which(train_data$SalePrice %in% outliers),]
+length(outliers)
+```
+
+<br>
+<br>
+
+##### **c. Analysis datas with Outliers and without Outliers in scatter plot**
+
+```{r}
+par(mfrow=c(1, 4))
+
+# OverallQual
+plot(train_data$GrLivArea, train_data$SalePrice, main="With Outliers", xlab="GrLivArea", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ GrLivArea, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$GrLivArea, train_data1$SalePrice, main="Outliers removed", xlab="GrLivArea", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~GrLivArea, data=train_data1), col="blue", lwd=3, lty=2)
+
+# GrLivArea
+plot(train_data$OverallQual, train_data$SalePrice, main="With Outliers", xlab="OverallQual", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ OverallQual, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$OverallQual, train_data1$SalePrice, main="Outliers removed", xlab="OverallQual", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~OverallQual, data=train_data1), col="blue", lwd=3, lty=2)
+ 
+# GarageCars
+plot(train_data$GarageCars, train_data$SalePrice, main="With Outliers", xlab="GarageCars", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ GarageCars, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$GarageCars, train_data1$SalePrice, main="Outliers removed", xlab="GarageCars", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~GarageCars, data=train_data1), col="blue", lwd=3, lty=2)
+
+# YearBuiltOrRe
+plot(train_data$YearBuiltOrRe, train_data$SalePrice, main="With Outliers", xlab="YearBuiltOrRe", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ YearBuiltOrRe, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$YearBuiltOrRe, train_data1$SalePrice, main="Outliers removed", xlab="YearBuiltOrRe", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ YearBuiltOrRe, data=train_data1), col="blue", lwd=3, lty=2)
+
+# TotalBath
+plot(train_data$TotalBath, train_data$SalePrice, main="With Outliers", xlab="TotalBath", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ TotalBath, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$TotalBath, train_data1$SalePrice, main="Outliers removed", xlab="TotalBath", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ TotalBath, data=train_data1), col="blue", lwd=3, lty=2)
+
+# NBscore
+plot(train_data$NBscore, train_data$SalePrice, main="With Outliers", xlab="NBscore", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ NBscore, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$NBscore, train_data1$SalePrice, main="Outliers removed", xlab="NBscore", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ NBscore, data=train_data1), col="blue", lwd=3, lty=2)
+ 
+# LotArea
+plot(train_data$LotArea, train_data$SalePrice, main="With Outliers", xlab="LotArea", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ LotArea, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$LotArea, train_data1$SalePrice, main="Outliers removed", xlab="LotArea", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ LotArea, data=train_data1), col="blue", lwd=3, lty=2)
+
+# BedroomAbvGr
+plot(train_data$BedroomAbvGr, train_data$SalePrice, main="With Outliers", xlab="BedroomAbvGr", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ BedroomAbvGr, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$BedroomAbvGr, train_data1$SalePrice, main="Outliers removed", xlab="BedroomAbvGr", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ BedroomAbvGr, data=train_data1), col="blue", lwd=3, lty=2)
+
+# TotalBsmtSF
+plot(train_data$TotalBsmtSF, train_data$SalePrice, main="With Outliers", xlab="TotalBsmtSF", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ TotalBsmtSF, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$TotalBsmtSF, train_data1$SalePrice, main="Outliers removed", xlab="TotalBsmtSF", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ TotalBsmtSF, data=train_data1), col="blue", lwd=3, lty=2)
+
+# X1stFlrSF 
+plot(train_data$X1stFlrSF, train_data$SalePrice, main="With Outliers", xlab="X1stFlrSF", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ X1stFlrSF, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$X1stFlrSF, train_data1$SalePrice, main="Outliers removed", xlab="X1stFlrSF", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ X1stFlrSF, data=train_data1), col="blue", lwd=3, lty=2)
+
+# X2ndFlrSF
+plot(train_data$X2ndFlrSF, train_data$SalePrice, main="With Outliers", xlab="X2ndFlrSF", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ X2ndFlrSF, data=train_data), col="blue", lwd=3, lty=2)
+plot(train_data1$X2ndFlrSF, train_data1$SalePrice, main="Outliers removed", xlab="X2ndFlrSF", ylab="SalePrice", pch="*", col="red", cex=2)
+abline(lm(SalePrice ~ X2ndFlrSF, data=train_data1), col="blue", lwd=3, lty=2)
+```
+
+<br>
+<br>
+<br>
+<br>
+
+## Modeling
+
+<br>
+
+### STEP 1: Model on the all train data
+
+<br>
+
+SalePrice, OverallQual, GrLivArea, GarageCars, YearBuiltOrRe, TotalBath, NBscore, LotArea, BedroomAbvGr, TotalBsmtSF, X1stFlrSF, X2ndFlrSF were considered for the full model based on the corrplot.
+
+<br>
+
+#### Model 1: linear fit of all variables. 
+```{r}
+model1=lm(data=train_data,SalePrice~OverallQual+GrLivArea+GarageCars+YearBuiltOrRe+TotalBath+NBscore+LotArea+BedroomAbvGr+TotalBsmtSF+X1stFlrSF+X2ndFlrSF)
+summary(model1)
+```
+
+From the relationship between these variables appear to be strong as shown by Adjusted R-Suared value, **0.7932** and the probability. Also conclude from the p-value that GrLivArea, X1stFlrSF, X2ndFlrSF are not a significant variable for the prediction of price. By drop this variables a lower Adjusted R-Suared value, **0.7662** appeared. Thus we shouldn't drop these varibles in our regression model.
+
+<br>
+
+#### Model 2: linear fit of part variables. 
+```{r}
+model2=lm(data=train_data,SalePrice~OverallQual+GarageCars+YearBuiltOrRe+TotalBath+NBscore+LotArea+BedroomAbvGr+TotalBsmtSF)
+summary(model2)
+
+
+```
+
+By drop this variables a lower Adjusted R-Suared value, **0.7662** appeared. Thus we shouldn't drop these varibles in our regression model.
+
+<br>
+<br>
+<br>
+
+
+### STEP 2: Model outliers from variables
+#### Model the entire training data and decide on the retention of outliers in different variables.
+
+<br>
+
+#### Model 1: with all outliers
+```{r}
+# with all outliers
+model1=lm(data=train_data,SalePrice~OverallQual+GrLivArea+GarageCars+YearBuiltOrRe+TotalBath+NBscore+LotArea+BedroomAbvGr+TotalBsmtSF+X1stFlrSF+X2ndFlrSF)
+summary(model1)
+
+```
+
+<br>
+
+#### Model 3: without all outliers
+```{r} 
+# without all outliers
+
+
+model3=lm(data=train_data1,SalePrice~OverallQual+GrLivArea+GarageCars+YearBuiltOrRe+TotalBath+NBscore+LotArea+BedroomAbvGr+TotalBsmtSF+X1stFlrSF+X2ndFlrSF)
+summary(model3)
+
+```
+By comparing linear model 1 with all outliers and model 3 without all outliers. The summary from model 1 and model 3 showed that we should clean all outliers. And by take a deep look at P value in T test for all variables, we should not clean the outliers in BedroomAbvGr, TotalBsmtSF, X2ndFlrSF and GrLivArea .
+
+<br>
+
+```{r}
+outliers <- unlist(lapply(train_data[, c("OverallQual", "GarageCars", "YearBuiltOrRe", "TotalBath", "NBscore", "LotArea", "X2ndFlrSF","X1stFlrSF")], function(x) boxplot(x, plot=FALSE)$out))
+
+
+train_data2 <- train_data
+for (col in c("OverallQual", "GarageCars", "YearBuiltOrRe", "TotalBath", "NBscore", "LotArea", "X2ndFlrSF","X1stFlrSF")) {
+  train_data2 <- train_data2[!(train_data2[, col] %in% outliers), ]
+}
+
+```
+
+<br>
+
+#### Model 4: with parts outliers
+```{r} 
+
+# with parts outliers
+model4=lm(data=train_data2,SalePrice~OverallQual+GarageCars+YearBuiltOrRe+TotalBath+NBscore+LotArea+BedroomAbvGr+TotalBsmtSF+X1stFlrSF+X2ndFlrSF)
+summary(model4)
+
+
+```
+As concluded from the Adjusted R-squared value of 0.8227, the relationship between these variables appear to be quite strong.
+
+<br>
+<br>
+<br>
+
+### STEP 3: Detect Influential Points
+
+<br>
+
+If we label an observation as an outlier based on only one feature (even if it's not that important), it could lead us to draw incorrect conclusions. Instead, it's better to consider all the different features (or X's) when we're trying to determine whether a particular entity (like a row or observation) is an extreme value. The Cook's distance is a useful tool that can help us do this and identify which features are most relevant.
+
+```{r}
+cooksd <- cooks.distance(model3)
+mean(cooksd)
+```
+
+<br>
+
+#### Plot the cook’s distance.
+```{r}
+par(mfrow=c(1, 1))
+plot(cooksd, main="Influential Obs by Cooks distance",xlim=c(0,1500),ylim=c(0,0.1))
+axis(1, at=seq(0, 1500, 1500))
+axis(2, at=seq(0, 0.001, 0.001), las=1) 
+abline(h = 4*mean(cooksd, na.rm=T), col="green")  
+text(x=1:length(cooksd)+1,y=cooksd,labels=ifelse(cooksd>4*mean(cooksd,na.rm=T),names(cooksd),""), col="red")
+
+```
+
+<br>
+
+#### Find the influential points in the data.
+```{r}
+influential <- as.numeric(names(cooksd)[(cooksd > 4*mean(cooksd, na.rm=T))])  # influential row numbers
+head(train_data2[influential, ])
+```
+
+<br>
+
+
+```{r}
+influential_data=train_data2[influential, ]
+```
+
+<br>
+<br>
+
+#### Take out the influential outliers.
+```{r}
+influencial_outliers=inner_join(outliers_data,influential_data)
+influencial_outliers
+```
+We have **17 observations** which are outliers yet influential hence we need to keep these outliers.
+
+<br>
+<br>
+
+#### Modify the Influential Outliers
+Modify the data excluding the outliers and including only the influential outliers.
+```{r}
+train_data3=rbind(train_data2,influencial_outliers)
+```
+
+<br>
+<br>
+<br>
+
+### STEP 4: Model with Influential Outliers
+#### Modelling using the train data which includes influential_outliers
+
+<br>
+
+#### Model 5: with influential_outliers
+```{r}
+# Model 5: with influential_outliers
+model5=lm(data=train_data3,SalePrice~OverallQual+GarageCars+YearBuiltOrRe+TotalBath+NBscore+LotArea+BedroomAbvGr+TotalBsmtSF+X1stFlrSF+X2ndFlrSF)
+summary(model5)
+```
+
+<br>
+
+#### Model 6: model 5 without 2 strars or less variables
+```{r}
+model6=lm(data=train_data3,SalePrice~OverallQual+GarageCars+TotalBath+NBscore+LotArea+BedroomAbvGr+X1stFlrSF+X2ndFlrSF)
+summary(model6)
+```
+
+The relationship between above variables appear to be very strong as shown by R-Suared value and the probability. Even I try fitting the model including a few other variables which we left out, the R squared value won't increase. As a conclude from the p-value that all variables are relevantly significant with two to three stars for the prediction of price. Hence we keep all variable in **model 5**.
+
+<br>
+
+**As concluded from the Adjusted R-squared value from model 5 with 0.8322, the relationship between these variables appear to be vary strong.**
+
+
+<br>
+<br>
+
+## Accuracy of Model
+
+```{r}
+
+pred=model5$fitted.values
+
+
+tally_table=data.frame(actual=train_data3$SalePrice, predicted=pred)
+
+mape=mean(abs(tally_table$actual-tally_table$predicted)/tally_table$actual)
+accuracy=1-mape
+accuracy 
+```
+##### **We see that the accuracy of train_data3 (0.8 of the overall cleaned traindata) is 88.95%**
+
+<br>
+
+```{r}
+
+pred_test=predict(newdata=test_data,model5)
+
+
+tally_table_1=data.frame(actual=test_data$SalePrice, predicted=pred_test)
+
+mape_test=mean(abs(tally_table_1$actual-tally_table_1$predicted)/tally_table_1$actual)
+accuracy_test=1-mape_test
+accuracy_test
+```
+
+##### **We see that the accuracy of test_data (0.2 of the overall traindata) is 82.23%. Thus our model can predict price with an accuracy of 82.23%**
+
+<br>
+<br>
+
+
+
+
+
+
